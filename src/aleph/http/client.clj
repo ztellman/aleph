@@ -479,6 +479,7 @@
            response-buffer-size
            on-closed
            response-executor
+           max-lifetime
            epoll?
            proxy-options]
     :or {bootstrap-transform identity
@@ -567,7 +568,11 @@
             (when on-closed (on-closed))
             (s/close! requests)))
 
-        (let [t0 (System/nanoTime)]
+        (let [t0 (System/nanoTime)
+              deadline (when max-lifetime
+                         (+ t0 (* max-lifetime 1e6
+                                  ;; 30% jitter to avoid reconnect avalanches.
+                                  (+ 0.85 (* 0.3 (rand))))))]
           (fn [req]
             (if (contains? req ::close)
               (netty/wrap-future (netty/close ch))
@@ -601,10 +606,12 @@
                                 (s/on-closed body #(netty/close ch))
                                 (netty/close ch)))
 
-                            (assoc rsp
-                              :body
-                              (bs/to-input-stream body
-                                {:buffer-size response-buffer-size}))))))))))))))))
+                            (cond-> (assoc rsp
+                                      :body
+                                      (bs/to-input-stream body
+                                        {:buffer-size response-buffer-size}))
+                              (and deadline (> (System/nanoTime) deadline))
+                              (assoc :aleph/keep-alive? false))))))))))))))))
 
 ;;;
 
